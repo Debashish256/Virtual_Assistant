@@ -4,192 +4,264 @@ import pyttsx3
 import webbrowser
 import wikipedia
 import wolframalpha
+import keyboard
 
-# speech Engine initialisation
+import openai
+
+# Load credentials
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+# Google TTS
+import google.cloud.texttospeech as tts
+import pygame
+import time
+
+# Mute ALSA errors...
+from ctypes import *
+from contextlib import contextmanager
+
+ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+
+c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+
+@contextmanager
+def noalsaerr():
+    try: 
+        asound = cdll.LoadLibrary('libasound.so')
+        asound.snd_lib_error_set_handler(c_error_handler)
+        yield
+        asound.snd_lib_error_set_handler(None)
+    except:
+        yield
+        print('')
+
+### PARAMETERS ###
+activationWords = ['computer', 'jarvis', 'voice_bot', 'showdown']
+tts_type = 'local' # google or local
+
+# Local speech engine initialisation
 engine = pyttsx3.init()
-# get the voice property
-voice = engine.getProperty("voice")
-# set the voice property
-engine.setProperty("voice", voice[1])  # 0 for male  1 for female
-# an wakeuo word
-activationWord = "computer"
+voices = engine.getProperty('voices')
+engine.setProperty('voice', voices[1].id) # 0 = male, 1 = female
 
-# selecting the browser
-# set the path for the browser
-bravePath = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-# register the browser to the web browser so that you can choose later
-webbrowser.register("brave", None, webbrowser.BackgroundBrowser(bravePath))
+# Google TTS client
+def google_text_to_wav(voice_name: str, text: str):
+    language_code = "-".join(voice_name.split("-")[:2])
 
-# get the Wolframaplha appid
-appId = "LG83QG-LUYGLTUR6L"
-# activating the wolframaplha id
+    # Set the text input to be synthesized
+    text_input = tts.SynthesisInput(text=text)
+
+    # Build the voice request, select the language code ("en-US") and the voice name
+    voice_params = tts.VoiceSelectionParams(
+        language_code=language_code, name=voice_name
+    )
+
+    # Select the type of audio file you want returned
+    audio_config = tts.AudioConfig(audio_encoding=tts.AudioEncoding.LINEAR16)
+
+    client = tts.TextToSpeechClient()
+    response = client.synthesize_speech(
+        input=text_input, voice=voice_params, audio_config=audio_config
+    )
+
+    return response.audio_content
+
+# Configure browser
+# Set the path
+firefox_path = r"usr/bin/firefox"
+# Register the browser
+webbrowser.register('firefox', None, 
+                    webbrowser.BackgroundBrowser(firefox_path))
+
+# Wolfram Alpha client
+appId = 'LG83QG-LUYGLTUR6L'
 wolframClient = wolframalpha.Client(appId)
 
-
-# function for speaking
-def speakUp(text: object, rate: object = 160) -> object:  # rate at which the AI will say
-    engine.setProperty("rate", rate)
-    # make the AI speak
-    engine.say(text)
-    # make it waits
-    engine.runAndWait()
-
-
-# create a function for getting the command
-def takeCommand():
-    # activate the speech recogniser
-    listener = sr.Recognizer()
-    print("What's NOW???????")
-
-    # setup the system microphone
-    with sr.Microphone() as source:
-        # time before it stop listesing after i speakuo
-        listener.pause_threshold = 2
-        # get the info from the microphone
-        inputSpeech = listener.listen(source)
-
-    # recognizing the user
-    try:
-        print("Hoping i know you :<)")
-        query = listener.recognize_google(inputSpeech, language="en_gb")
-        print(f'So this is what you said-- {query}')
-        # speakUp("I Know you.")
-
-    # if the speaker is not recognized
-    except Exception as exception:
-        print("Wait a minute.............")
-        print("WHO ARE YOU??????????")
-        speakUp("Wait a minute.............")
-        speakUp("WHO ARE YOU??????????")
-
-        print(exception)
-        return "None"
-    print("query-->> ", query)
-    return query
-
-
-# search on wikipedia
-def search_wikipedia(query):
-    searchResults = wikipedia.search(query)  # collecting the search in an array
-    if not searchResults:
-        print('Sorry, Nothing found related to your query.')
-        speakUp("Sorry, Nothing found related to our query.")
+def speak(text, rate = 120):
+    time.sleep(0.3)
+    try:     
+        if tts_type == 'local':
+            engine.setProperty('rate', rate) 
+            engine.say(text, 'txt')
+            engine.runAndWait()
+        if tts_type == 'google':
+            speech = google_text_to_wav('en-US-News-K', text)
+            pygame.mixer.init(frequency=12000, buffer = 512)
+            speech_sound = pygame.mixer.Sound(speech)
+            speech_length = int(math.ceil(pygame.mixer.Sound.get_length(speech_sound)))
+            speech_sound.play()
+            time.sleep(speech_length)
+            pygame.mixer.quit()
+ 
+    ## The standard keyboard interrupt is Ctrl+C. This interrupts the Google speech synthesis.
+    except KeyboardInterrupt:
+        try:
+            if tts_type == 'google':
+                pygame.mixer.quit()
+        except:
+            pass
         return
-    try:
-        wikiPage = wikipedia.page(searchResults[0])
+
+
+def parseCommand():
+    with noalsaerr():
+        listener = sr.Recognizer()
+        print('Listening for a command')
+
+        with sr.Microphone() as source:
+            listener.pause_threshold = 2
+            input_speech = listener.listen(source)
+
+        try:
+            print('Recognizing speech...')
+            query = listener.recognize_google(input_speech, language='en_gb')
+            print(f'The input speech was: {query}')
+
+        except Exception as exception:
+            print('I did not quite catch that')
+            print(exception)
+
+            return 'None'
+
+        return query
+
+def search_wikipedia(keyword=''):
+    searchResults = wikipedia.search(keyword)
+    if not searchResults:
+        return 'No result received'
+    try: 
+        wikiPage = wikipedia.page(searchResults[0]) 
     except wikipedia.DisambiguationError as error:
-        wikiPage.page(error.options[0])  # if error ocurrs we take the first error
+        wikiPage = wikipedia.page(error.options[0])
     print(wikiPage.title)
-    # collecting the search result summary
     wikiSummary = str(wikiPage.summary)
     return wikiSummary
 
-
-def listOrDictionary(var):
+def listOrDict(var):
     if isinstance(var, list):
         return var[0]['plaintext']
     else:
         return var['plaintext']
 
-
-def search_wolframalpha(query):
-    # get the response from WolframAlpha of the query
-    response = wolframClient.query(query)
-
-    # @success: Wolfram Aplha was able to resolve the query
+def search_wolframalpha(keyword = ''):
+    response = wolframClient.query(keyword)
+  
+    # @success: Wolfram Alpha was able to resolve the query
     # @numpods: Number of results returned
-    # pod     : List of results. this can also contain subpods
-    if response['@success'] == 'false':
-        return "Could not compute"
+    # pod: List of results. This can also contain subpods
 
+    # Query not resolved
+    if response['@success'] == 'false':
+        speak('I could not compute')
     # Query resolved
-    else:
+    else: 
         result = ''
         # Question
         pod0 = response['pod'][0]
+        # May contain answer (Has highest confidence value) 
+        # if it's primary or has the title of result or definition, then it's the official result
         pod1 = response['pod'][1]
-
-        # May contain the answer, has the highest confidence value
-        # If it's primary, or has the title of result or defination, then it's the official result
-        if ('result' in pod1['@title'].lower()) or (pod1.get('@primary', 'false') == 'true') or (
-                'definition' in pod1['@title'].lower()):
+        if (('result') in pod1['@title'].lower()) or (pod1.get('@primary', 'false') == 'true') or ('definition' in pod1['@title'].lower()):
             # Get the result
-            result = listOrDictionary(pod1['subpod'])
-            # remove the bracketed part from the result
+            result = listOrDict(pod1['subpod'])
+            # Remove bracketed section
             return result.split('(')[0]
         else:
-            question = listOrDictionary(pod0['subpod'])
-            # remove the bracketed part from the result
-            return result.split('(')[0]
+            # Get the interpretation from pod0
+            question = listOrDict(pod0['subpod'])
+            # Remove bracketed section
+            question = question.split('(')[0]
+            # Could search wiki instead here? 
+            return question
 
-            # search in wikipedia
-            speakUp('Computing failed. Searching on wikipedia..')
-            return search_wikipedia(question)
+def query_openai(prompt = ""):
+    openai.organization = os.environ['OPENAI_ORG']
+    openai.api_key = os.environ['OPENAI_API_KEY']
 
+    # Temperature is a measure of randonmess
+    # Max_tokens is the number of tokens to generate
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        temperature=0.3,
+        max_tokens=80,
+
+    )
+
+    return response.choices[0].text
 
 # Main loop
 
-if __name__ == "__main__":
-    speakUp("Hello there... What can i do for you??")
-    # turning on the system
+if __name__ == '__main__': 
+    t = 0
+    if t == 0 :
+        speak('Hey there. How can I help You ??', 125)
+        t += 2
+
     while True:
-        # make a list of what i said
-        query = takeCommand().lower().split()
-        print("QUERY:  ", query)
+        # Parse as a list
+        # query = 'computer say hello'.split()
+        query = parseCommand().lower().split()
 
-        # Checking for the Wakeup word first
-        if query[0] == activationWord:
+        if query[0] in activationWords and len(query) > 1:
             query.pop(0)
-            print("QUERY:  ", query)
 
-            print(f'query---> {query}')
-            # listing Commands
-            if query[0] == "say":
-                if "hello" in query:
-                    print("hey")
-                    speakUp("hye")
+            # Set commands
+            if query[0] == 'say':
+                if 'hello' in query:
+                    speak('Hello, I am Jarvis an AI bot capable to perform basic operations on web.')
                 else:
-                    query.pop(0)  # removing the "say"
-                    speech = " ".join(query)
-                    speakUp((speech))
+                    query.pop(0) # Remove 'say'
+                    speech = ' '.join(query) 
+                    speak(speech)
 
-            # navigating to websites
-            if query[0] == "go" and query[1] == "to":
-                speakUp("opening...")
-                query = " ".join(query[2:])
-                webbrowser.get("chrome").open_new(query)
+            # Query OpenAI
+            if query[0] == 'insight':
+                query.pop(0) # Remove 'insight'
+                query = ' '.join(query)
+                speech = query_openai(query)
+                speak("Ok")
+                speak(speech)
 
-            # searching on wikipedia
-            if query[0] == "wikipedia":
-                query = " ".join(query[1:])
-                speakUp("Searching on Wikipedia....")
-                # collecting the search result
-                result = search_wikipedia(query)
-                speakUp(result)
+            # Navigation
+            if query[0] == 'go' and query[1] == 'to':
+                speak('Opening... ')
+                # Assume the structure is activation word + go to, so let's remove the next two words
+                query = ' '.join(query[2:])
+                webbrowser.get('chrome').open_new(query)
+
+            # Wikipedia
+            if query[0] == 'wikipedia':
+                query = ' '.join(query[1:])
+                speak('Querying the universal databank')
+                time.sleep(2)
+                speak(search_wikipedia(query))
 
             # Wolfram Alpha
-            if query[0] == 'compute' or query[0] == "computer":
-                query = " ".join(query[1:])
-                speakUp("Computing..")
+            if query[0] == 'compute' or query[0] == 'computer':
+                query = ' '.join(query[1:])
                 try:
-                    # searching the query in wolframaplha
                     result = search_wolframalpha(query)
-                    print("result: ", result)
-                    speakUp(result)
+                    speak(result)
                 except:
-                    speakUp("Unable to compute.")
+                    speak('Unable to compute')
 
-            # Taking note
-            if query[0] == "log":
-                speakUp("Ready to take note.")
-                newNote = takeCommand().lower()
-                now = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-                # creating a file to take note
+            # Note taking
+            if query[0] == 'log':
+                speak('Ready to record your note')
+                newNote = parseCommand().lower()
+                now = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
                 with open('note_%s.txt' % now, 'w') as newFile:
+                    newFile.write(now)
+                    newFile.write(' ')
                     newFile.write(newNote)
-                speakUp('Noted..')
+                speak('Note written')
 
-            # Exit
-            if query[0] == "exit":
-                speakUp('Goodbye.')
+            if query[0] == 'terminate':
+                speak('Goodbye')
                 break
